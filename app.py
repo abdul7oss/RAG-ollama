@@ -7,7 +7,6 @@ import ollama
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_experimental.text_splitter import SemanticChunker
-from langchain.embeddings import HuggingFaceBgeEmbeddings
 from langchain_ollama import OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.prompts import ChatPromptTemplate, PromptTemplate
@@ -26,8 +25,8 @@ st.set_page_config(
     page_title="Ollama PDF RAG Streamlit UI",
     page_icon="🎈",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
+
 
 # Logging configuration
 logging.basicConfig(
@@ -37,6 +36,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
 
 @st.cache_resource(show_spinner=True)
 def extract_model_names() -> Tuple[str, ...]:
@@ -49,7 +49,7 @@ def extract_model_names() -> Tuple[str, ...]:
         if not models_info or not hasattr(models_info, "models") or not models_info.models:
             logger.error("No models found in Ollama API response.")
             return ()
-        
+
         # Extract model names properly
         model_names = tuple(
             model.model for model in models_info.models if model.model and "llama2" not in model.model
@@ -65,10 +65,12 @@ def extract_model_names() -> Tuple[str, ...]:
         logger.error(f"Error extracting model names: {e}")
         return ()
 
+
 @st.cache_resource
 def get_embeddings():
     logger.info("Using Ollama Embeddings")
     return OllamaEmbeddings(model="nomic-embed-text")
+
 
 def get_pdf_text(pdf_docs):
     text = ""
@@ -78,31 +80,29 @@ def get_pdf_text(pdf_docs):
             text += page.extract_text() or ""
     return text
 
-
 def get_text_chunks(text):
     try:
-        model_name = "BAAI/bge-base-en-v1.5"
-        model_kwargs = {'device': 'cpu'}
-        encode_kwargs = {'normalize_embeddings': True} # set True to compute cosine similarity
-        embeddings = HuggingFaceBgeEmbeddings(
-            model_name=model_name,
-            model_kwargs=model_kwargs,
-            encode_kwargs=encode_kwargs,
-        )
-        text_splitter = SemanticChunker(embeddings=embeddings,
-                                 breakpoint_threshold_type="percentile",
-                                 breakpoint_threshold_amount=55,
-                                 )
-        documents = text_splitter.create_documents([text])
-        chunks = [doc.page_content for doc in documents]
-        return chunks
+            
+            embeddings = OllamaEmbeddings(model="nomic-embed-text")
+            
+            
+            text_splitter = SemanticChunker(
+                embeddings=embeddings,
+                breakpoint_threshold_type="percentile",
+                breakpoint_threshold_amount= 74  # Tune this value as needed
+            )
+            
+            # Create documents (chunks) from the input text.
+            documents = text_splitter.create_documents([text])
+            chunks = [doc.page_content for doc in documents]
+            
+            
+            return chunks
+
 
     except Exception as e:
         logger.error(f"Error in get_text_chunks function: {e}")
         return []
-
-
- 
 
 
 def get_vector_store(text_chunks):
@@ -115,15 +115,18 @@ def get_vector_store(text_chunks):
         logger.error(f"Error at get_vector_store function: {e}")
     return vector_store
 
+
 @st.cache_resource
 def get_llm(selected_model: str):
     logger.info(f"Getting LLM: {selected_model}")
     return ChatOllama(model=selected_model, temperature=0.1)
 
+
 def process_question(question: str, vector_db: FAISS, selected_model: str) -> str:
-    logger.info(f"Processing question: {question} using model: {selected_model}")
+    logger.info(
+        f"Processing question: {question} using model: {selected_model}")
     llm = get_llm(selected_model)
-    
+
     # Define the query prompt template
     QUERY_PROMPT = PromptTemplate(
         input_variables=["question"],
@@ -165,14 +168,17 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     logger.info("Question processed and response generated")
     return response
 
+
 @st.cache_data
 def extract_all_pages_as_images(file_upload) -> List[Any]:
-    logger.info(f"Extracting all pages as images from file: {file_upload.name}")
+    logger.info(
+        f"Extracting all pages as images from file: {file_upload.name}")
     pdf_pages = []
     with pdfplumber.open(file_upload) as pdf:
         pdf_pages = [page.to_image().original for page in pdf.pages]
     logger.info("PDF pages extracted as images")
     return pdf_pages
+
 
 def delete_vector_db() -> None:
     logger.info("Deleting vector DB")
@@ -186,12 +192,22 @@ def delete_vector_db() -> None:
     logger.info("Vector DB and related session state cleared")
     st.rerun()
 
+
 def main():
-    st.subheader("🧠 Ollama Chat with PDF RAG", divider="gray", anchor=False)
+    st.title("🧠 Ollama Chat with PDF RAG", anchor=False)
+
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            padding-top: 2rem !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
     available_models = extract_model_names()
-
-    col1, col2 = st.columns([1.5, 2])
 
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
@@ -199,87 +215,56 @@ def main():
     if "vector_db" not in st.session_state:
         st.session_state["vector_db"] = None
 
-    if available_models:
-        selected_model = col2.selectbox(
-            "Pick a model available locally on your system ↓", available_models
-        )
+    selected_model = st.sidebar.selectbox(
+        "Pick a model available locally on your system", available_models) if available_models else ""
+    pdf_docs = st.sidebar.file_uploader(
+        "Upload PDFs", accept_multiple_files=True)
 
-    pdf_docs = col1.file_uploader(
-        "Upload your PDF Files", 
-        accept_multiple_files=True
-    )
-
-    # Submit and Delete buttons side by side
-    col_buttons = col1.columns([2.2, 1.0])
-    
-    with col_buttons[0]:
-        submit_button = st.button("Submit & Process", key="submit_process")
-
-    with col_buttons[1]:
-        delete_collection = st.button("⚠️ Delete collection", type="secondary")
-
-    if submit_button and pdf_docs:
+    if st.sidebar.button("Process PDF") and pdf_docs:
         with st.spinner("Processing..."):
             raw_text = get_pdf_text(pdf_docs)
             text_chunks = get_text_chunks(raw_text)
             st.session_state["vector_db"] = get_vector_store(text_chunks)
             st.success("Done")
-
-        pdf_pages = extract_all_pages_as_images(pdf_docs[0])  # Assuming single file upload
+        pdf_pages = extract_all_pages_as_images(
+            pdf_docs[0])  # Assuming single file upload
         st.session_state["pdf_pages"] = pdf_pages
-
-        zoom_level = col1.slider(
-            "Zoom Level", min_value=100, max_value=1000, value=700, step=50, key="zoom_slider_1"
-        )
-
-        with col1:
-            with st.container(height=410, border=True):
-                for page_image in pdf_pages:
-                    st.image(page_image, width=zoom_level)
-
-    if delete_collection:
+		
+    if st.sidebar.button('⚠️ Delete collection'):
         delete_vector_db()
 
-    with col2:
-        message_container = st.container(height=500, border=True)
+    message_container = st.container(height=500, border=True)
+    for message in st.session_state["messages"]:
+        avatar = "🤖" if message["role"] == "assistant" else "😎"
+        with message_container.chat_message(message["role"], avatar=avatar):
+            st.markdown(message["content"])
 
-        for message in st.session_state["messages"]:
-            avatar = "🤖" if message["role"] == "assistant" else "😎"
-            with message_container.chat_message(message["role"], avatar=avatar):
-                st.markdown(message["content"])
+    if prompt := st.chat_input("Enter a prompt here..."):
+        try:
+            st.session_state["messages"].append(
+                {"role": "user", "content": prompt})
+            message_container.chat_message("user", avatar="😎").markdown(prompt)
 
-        if prompt := st.chat_input("Enter a prompt here..."):
-            try:
-                st.session_state["messages"].append({"role": "user", "content": prompt})
-                message_container.chat_message("user", avatar="😎").markdown(prompt)
+            with message_container.chat_message("assistant", avatar="🤖"):
+                with st.spinner(":green[processing...]"):
+                    if st.session_state["vector_db"] is not None:
+                        response = process_question(
+                            prompt, st.session_state["vector_db"], selected_model
+                        )
+                        st.markdown(response)
+                        st.session_state["messages"].append(
+                            {"role": "assistant", "content": response}
+                        )
+                    else:
+                        response = "Please upload and process a PDF file first."
+                        st.warning(response)
 
-                with message_container.chat_message("assistant", avatar="🤖"):
-                    with st.spinner(":green[processing...]"):
-                        if st.session_state["vector_db"] is not None:
-                            response = process_question(
-                                prompt, st.session_state["vector_db"], selected_model
-                            )
-                            st.markdown(response)
-                            st.session_state["messages"].append(
-                                {"role": "assistant", "content": response}
-                            )
-                        else:
-                            response = "Please upload and process a PDF file first."
-                            st.warning(response)
+        except Exception as e:
+            st.error(e, icon="⚠️")
+            logger.error(f"Error processing prompt: {e}")
 
-            except Exception as e:
-                st.error(e, icon="⚠️")
-                logger.error(f"Error processing prompt: {e}")
 
-        # Ensure PDF viewer is retained
-        if st.session_state.get("pdf_pages"):
-            zoom_level = col1.slider(
-                "Zoom Level", min_value=100, max_value=1000, value=700, step=50, key="zoom_slider_2"
-            )
-            with col1:
-                with st.container(height=410, border=True):
-                    for page_image in st.session_state["pdf_pages"]:
-                        st.image(page_image, width=zoom_level)
+
 
 if __name__ == "__main__":
     main()
