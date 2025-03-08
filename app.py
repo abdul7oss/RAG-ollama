@@ -2,6 +2,7 @@ import streamlit as st
 import logging
 import os
 import shutil
+import urllib.parse
 import pdfplumber
 import ollama
 from PyPDF2 import PdfReader
@@ -16,6 +17,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain.retrievers.multi_query import MultiQueryRetriever
 from typing import List, Tuple, Any
 from dotenv import load_dotenv
+import openparse
 
 # Load environment variables from .env file
 load_dotenv()
@@ -72,49 +74,43 @@ def get_embeddings():
     return OllamaEmbeddings(model="nomic-embed-text")
 
 
-def get_pdf_text(pdf_docs):
-    text = ""
-    for pdf in pdf_docs:
-        pdf_reader = PdfReader(pdf)
-        for page in pdf_reader.pages:
-            text += page.extract_text() or ""
-    return text
+# def get_pdf_text(pdf_docs):
+#     basic_doc_path = "/content/2501.12948v1.pdf"
+#     parser = openparse.DocumentParser()
+#     parsed_basic_doc = parser.parse(basic_doc_path)
 
-def get_text_chunks(text):
+#     for node in parsed_basic_doc.nodes:
+#         display(node)
+#     return text, page_mapping
+
+
+def get_text_chunks():
     try:
+        basic_doc_path = "/Users/razim/Downloads/lat/Data/2501.12948v1.pdf"
+        parser = openparse.DocumentParser()
+        parsed_basic_doc = parser.parse(basic_doc_path)    
+        chunks, metadata = [], []    
+        for nodes in parsed_basic_doc.nodes:
+            chunks.append(nodes.text)
+            metadata.append({"node": nodes})
+        return chunks, metadata
             
-            embeddings = OllamaEmbeddings(model="nomic-embed-text")
-            
-            
-            text_splitter = SemanticChunker(
-                embeddings=embeddings,
-                breakpoint_threshold_type="percentile",
-                breakpoint_threshold_amount= 74  # Tune this value as needed
-            )
-            
-            # Create documents (chunks) from the input text.
-            documents = text_splitter.create_documents([text])
-            chunks = [doc.page_content for doc in documents]
-            
-            
-            return chunks
-
-
     except Exception as e:
         logger.error(f"Error in get_text_chunks function: {e}")
-        return []
+        return [], []
 
 
-def get_vector_store(text_chunks):
+def get_vector_store(text_chunks, metadata):
     vector_store = None
     try:
         embeddings = get_embeddings()
-        vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
+        # Add metadata to each chunk
+        vector_store = FAISS.from_texts(text_chunks, embedding=embeddings, metadatas=metadata)
+        print(vector_store) 
         vector_store.save_local("faiss_index")
     except Exception as e:
         logger.error(f"Error at get_vector_store function: {e}")
     return vector_store
-
 
 @st.cache_resource
 def get_llm(selected_model: str):
@@ -123,15 +119,13 @@ def get_llm(selected_model: str):
 
 
 def process_question(question: str, vector_db: FAISS, selected_model: str) -> str:
-    logger.info(
-        f"Processing question: {question} using model: {selected_model}")
+    logger.info(f"Processing question: {question} using model: {selected_model}")
     llm = get_llm(selected_model)
 
     # Define the query prompt template
     QUERY_PROMPT = PromptTemplate(
         input_variables=["question"],
-        template="""
-        Original question: {question}""",
+        template="Original question: {question}",
     )
 
     # Create retriever with LLM for multiple query retrieval
@@ -140,13 +134,14 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     )
 
     # Define the answer template
-    template = """Answer the question as detailed as possible from the provided context only. 
-    Do not generate a factual answer if the information is not available. 
-    If you do not know the answer, respond with "I don’t know the answer as not sufficient information is provided in the PDF."
-    Context:\n {context}?\n
-    Question: \n{question}\n
-    Answer:
-    """
+    template = (
+        "Answer the question as detailed as possible from the provided context only. \n"
+        "Do not generate a factual answer if the information is not available. \n"
+        "If you do not know the answer, respond with \"I don’t know the answer as not sufficient information is provided in the PDF.\"\n"
+        "Context:\n {context}?\n\n"
+        "Question:\n{question}\n\n"
+        "Answer:"
+    )
 
     prompt = ChatPromptTemplate.from_template(template)
 
@@ -165,8 +160,13 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     if "I don’t know the answer" in response or not response.strip():
         return "I don’t know the answer as not sufficient information is provided in the PDF."
 
-    logger.info("Question processed and response generated")
-    return response
+    # Retrieve metadata from the vector database's relevant documents.
+    # This assumes that the underlying retriever returns Document objects with a 'metadata' attribute.
+    docs = vector_db.as_retriever().get_relevant_documents(question)
+    metadata_list = [doc.metadata for doc in docs if hasattr(doc, "metadata") and doc.metadata]
+
+    logger.info("Question processed and response generated with metadata")
+    return response, metadata_list
 
 
 @st.cache_data
@@ -178,6 +178,7 @@ def extract_all_pages_as_images(file_upload) -> List[Any]:
         pdf_pages = [page.to_image().original for page in pdf.pages]
     logger.info("PDF pages extracted as images")
     return pdf_pages
+
 
 
 def delete_vector_db() -> None:
@@ -192,6 +193,12 @@ def delete_vector_db() -> None:
     logger.info("Vector DB and related session state cleared")
     st.rerun()
 
+def save_uploaded_file(uploaded_file):
+    """Save uploaded PDF to a temporary file and return its path."""
+    file_path = f"./Data/{uploaded_file.name}"
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return file_path
 
 def main():
     st.title("🧠 Ollama Chat with PDF RAG", anchor=False)
@@ -200,7 +207,7 @@ def main():
         """
         <style>
         .block-container {
-            padding-top: 2rem !important;
+            padding-top: 1.9rem !important;
         }
         </style>
         """,
@@ -219,12 +226,17 @@ def main():
         "Pick a model available locally on your system", available_models) if available_models else ""
     pdf_docs = st.sidebar.file_uploader(
         "Upload PDFs", accept_multiple_files=True)
+    
+    for pdf in pdf_docs:
+        save_uploaded_file(pdf)
+    
 
     if st.sidebar.button("Process PDF") and pdf_docs:
         with st.spinner("Processing..."):
-            raw_text = get_pdf_text(pdf_docs)
-            text_chunks = get_text_chunks(raw_text)
-            st.session_state["vector_db"] = get_vector_store(text_chunks)
+            # text, page_mapping = get_pdf_text(pdf_docs)
+            chunks, metadata = get_text_chunks()
+            print(chunks)
+            st.session_state["vector_db"] = get_vector_store(chunks, metadata)
             st.success("Done")
         pdf_pages = extract_all_pages_as_images(
             pdf_docs[0])  # Assuming single file upload
@@ -248,10 +260,41 @@ def main():
             with message_container.chat_message("assistant", avatar="🤖"):
                 with st.spinner(":green[processing...]"):
                     if st.session_state["vector_db"] is not None:
-                        response = process_question(
+                        response, metadata = process_question(
                             prompt, st.session_state["vector_db"], selected_model
                         )
                         st.markdown(response)
+                        n = [i['node'] for i in metadata]
+                        # Display metadata with a button
+                        if metadata:
+                            pdf = openparse.Pdf('/Users/razim/Downloads/lat/Data/2501.12948v1.pdf')
+                            pdf.export_with_bboxes(
+                                n,
+                                output_pdf="/Users/razim/Downloads/lat/meta/marked-up.pdf"
+                            )
+                  
+
+                        st.markdown("### Sources:")
+                        for i, meta in enumerate(n, start=1):
+                            pdf_path = f"/Users/razim/Downloads/lat/meta/marked-up.pdf"  
+                            page_number = meta.bbox[0].page  # Page number
+                            print(pdf_path)
+                            # Create the URL to open `op.py`
+                            pdf_viewer_url = f"http://localhost:8502/?file={pdf_path}&page={page_number+1}"
+
+                            # Use `st.markdown` with proper HTML formatting
+                            button_html = f"""
+                            <a href="{pdf_viewer_url}" target="_blank">
+                                <button style="margin:5px; padding:10px; font-size:16px;">
+                                    📖 Source {i})
+                                </button>
+                            </a>
+                            """
+                            st.markdown(button_html, unsafe_allow_html=True)
+
+
+
+                        
                         st.session_state["messages"].append(
                             {"role": "assistant", "content": response}
                         )
@@ -262,6 +305,10 @@ def main():
         except Exception as e:
             st.error(e, icon="⚠️")
             logger.error(f"Error processing prompt: {e}")
+
+
+
+
 
 
 
