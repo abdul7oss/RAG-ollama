@@ -7,6 +7,7 @@ import pdfplumber
 import ollama
 from PyPDF2 import PdfReader
 import langchain
+from langchain.schema.runnable import RunnableLambda
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_ollama import OllamaEmbeddings
@@ -127,7 +128,7 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     # )
 
     # Retrieve only the best document (k=1)
-    retriever = vector_db.as_retriever(search_type="similarity", search_kwargs={"k": 1})
+    retriever = vector_db.as_retriever(search_type="similarity", search_kwargs={"k": 3})
 
     # Define the answer template
     template = (
@@ -140,10 +141,18 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     )
 
     prompt = ChatPromptTemplate.from_template(template)
-
+    docs = vector_db.as_retriever(search_kwargs={"k": 3}).get_relevant_documents(question)
+    con = [doc.page_content for doc in docs]
+    context = "\n".join(con)
+    print(context)
+    def get_context(_):
+        return {"context": context}
     # Set up the chain with retriever and LLM
     chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
+    {
+        "context": RunnableLambda(lambda _: context),  # Pass context properly
+        "question": RunnablePassthrough()  # Pass the question dynamically
+    }
         | prompt
         | llm
         | StrOutputParser()
@@ -151,7 +160,7 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
 
     # Get the response from the chain
     langchain.debug = True
-    response = chain.invoke(question)
+    response = chain.invoke({"question": question})
 
     # Check if the retrieved context is relevant or not
     if "I don’t know the answer" in response or not response.strip():
@@ -159,7 +168,7 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
 
     # Retrieve metadata from the vector database's relevant documents.
     # This assumes that the underlying retriever returns Document objects with a 'metadata' attribute.
-    docs = vector_db.as_retriever(search_kwargs={"k": 1}).get_relevant_documents(question)
+    
     metadata_list = [doc.metadata for doc in docs if hasattr(doc, "metadata") and doc.metadata]
     logger.info("Question processed and response generated with metadata")
     return response, metadata_list
