@@ -6,6 +6,7 @@ import urllib.parse
 import pdfplumber
 import ollama
 from PyPDF2 import PdfReader
+import langchain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_ollama import OllamaEmbeddings
@@ -18,6 +19,8 @@ from langchain.retrievers.multi_query import MultiQueryRetriever
 from typing import List, Tuple, Any
 from dotenv import load_dotenv
 import openparse
+import os
+import glob
 
 # Load environment variables from .env file
 load_dotenv()
@@ -73,20 +76,9 @@ def get_embeddings():
     logger.info("Using Ollama Embeddings")
     return OllamaEmbeddings(model="nomic-embed-text")
 
-
-# def get_pdf_text(pdf_docs):
-#     basic_doc_path = "/content/2501.12948v1.pdf"
-#     parser = openparse.DocumentParser()
-#     parsed_basic_doc = parser.parse(basic_doc_path)
-
-#     for node in parsed_basic_doc.nodes:
-#         display(node)
-#     return text, page_mapping
-
-
-def get_text_chunks():
+def get_text_chunks(pdf_path):
     try:
-        basic_doc_path = "/Users/razim/Downloads/lat/Data/2501.12948v1.pdf"
+        basic_doc_path = pdf_path
         parser = openparse.DocumentParser()
         parsed_basic_doc = parser.parse(basic_doc_path)    
         chunks, metadata = [], []    
@@ -128,10 +120,14 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
         template="Original question: {question}",
     )
 
-    # Create retriever with LLM for multiple query retrieval
-    retriever = MultiQueryRetriever.from_llm(
-        vector_db.as_retriever(), llm, prompt=QUERY_PROMPT
-    )
+
+    # # Create retriever with LLM for multiple query retrieval
+    # retriever = MultiQueryRetriever.from_llm(
+    #     vector_db.as_retriever(), llm, prompt=QUERY_PROMPT
+    # )
+
+    # Retrieve only the best document (k=1)
+    retriever = vector_db.as_retriever(search_type="similarity", search_kwargs={"k": 1})
 
     # Define the answer template
     template = (
@@ -154,6 +150,7 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     )
 
     # Get the response from the chain
+    langchain.debug = True
     response = chain.invoke(question)
 
     # Check if the retrieved context is relevant or not
@@ -162,9 +159,8 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
 
     # Retrieve metadata from the vector database's relevant documents.
     # This assumes that the underlying retriever returns Document objects with a 'metadata' attribute.
-    docs = vector_db.as_retriever().get_relevant_documents(question)
+    docs = vector_db.as_retriever(search_kwargs={"k": 1}).get_relevant_documents(question)
     metadata_list = [doc.metadata for doc in docs if hasattr(doc, "metadata") and doc.metadata]
-
     logger.info("Question processed and response generated with metadata")
     return response, metadata_list
 
@@ -196,6 +192,9 @@ def delete_vector_db() -> None:
 def save_uploaded_file(uploaded_file):
     """Save uploaded PDF to a temporary file and return its path."""
     file_path = f"./Data/{uploaded_file.name}"
+    files = glob.glob(file_path)
+    for f in files:
+        os.remove(f)
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     return file_path
@@ -228,14 +227,13 @@ def main():
         "Upload PDFs", accept_multiple_files=True)
     
     for pdf in pdf_docs:
-        save_uploaded_file(pdf)
+        pdf_path = save_uploaded_file(pdf)
     
 
     if st.sidebar.button("Process PDF") and pdf_docs:
         with st.spinner("Processing..."):
             # text, page_mapping = get_pdf_text(pdf_docs)
-            chunks, metadata = get_text_chunks()
-            print(chunks)
+            chunks, metadata = get_text_chunks(pdf_path)
             st.session_state["vector_db"] = get_vector_store(chunks, metadata)
             st.success("Done")
         pdf_pages = extract_all_pages_as_images(
