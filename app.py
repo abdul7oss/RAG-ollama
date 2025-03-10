@@ -145,8 +145,6 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     con = [doc.page_content for doc in docs]
     context = "\n".join(con)
     print(context)
-    def get_context(_):
-        return {"context": context}
     # Set up the chain with retriever and LLM
     chain = (
     {
@@ -274,16 +272,16 @@ def main():
                         n = [i['node'] for i in metadata]
                         # Display metadata with a button
                         if metadata:
-                            pdf = openparse.Pdf('/Users/razim/Downloads/lat/Data/2501.12948v1.pdf')
+                            pdf = openparse.Pdf(pdf_path)
                             pdf.export_with_bboxes(
                                 n,
-                                output_pdf="/Users/razim/Downloads/lat/meta/marked-up.pdf"
+                                output_pdf="./meta/marked-up.pdf"
                             )
                   
 
                         st.markdown("### Sources:")
                         for i, meta in enumerate(n, start=1):
-                            pdf_path = f"/Users/razim/Downloads/lat/meta/marked-up.pdf"  
+                            pdf_path = f"./meta/marked-up.pdf"  
                             page_number = meta.bbox[0].page  # Page number
                             print(pdf_path)
                             # Create the URL to open `op.py`
