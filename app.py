@@ -141,11 +141,23 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     )
 
     prompt = ChatPromptTemplate.from_template(template)
-    docs = vector_db.as_retriever(search_kwargs={"k": 3}).get_relevant_documents(question)
-    con = [doc.page_content for doc in docs]
-    context = "\n".join(con)
-    print(context)
-    # Set up the chain with retriever and LLM
+    results = vector_db.similarity_search_with_score(question, k=3)
+
+    docs = []
+    metadata_list = []
+    context_parts = []
+    for doc, score in results:
+        # Calculate confidence: lower distance means higher similarity.
+        # For example, a simple inversion: confidence = 1 / (1 + score)
+        confidence = 1 / (1 + score)
+        context_parts.append(doc.page_content)
+        # Copy existing metadata (if any) and add the computed confidence.
+        meta = doc.metadata.copy() if doc.metadata else {}
+        meta["confidence"] = confidence
+        metadata_list.append(meta)
+        docs.append(doc)
+
+    context = "\n".join(context_parts)
     chain = (
     {
         "context": RunnableLambda(lambda _: context),  # Pass context properly
@@ -167,7 +179,6 @@ def process_question(question: str, vector_db: FAISS, selected_model: str) -> st
     # Retrieve metadata from the vector database's relevant documents.
     # This assumes that the underlying retriever returns Document objects with a 'metadata' attribute.
     
-    metadata_list = [doc.metadata for doc in docs if hasattr(doc, "metadata") and doc.metadata]
     logger.info("Question processed and response generated with metadata")
     return response, metadata_list
 
@@ -270,6 +281,7 @@ def main():
                         )
                         st.markdown(response)
                         n = [i['node'] for i in metadata]
+                        confidences = [i['confidence'] for i in metadata]
                         # Display metadata with a button
                         if metadata:
                             pdf = openparse.Pdf(pdf_path)
@@ -280,25 +292,45 @@ def main():
                   
 
                         st.markdown("### Sources:")
-                        for i, meta in enumerate(n, start=1):
+                        for i, meta in enumerate(n):
                             pdf_path = f"./meta/marked-up.pdf"  
                             page_number = meta.bbox[0].page  # Page number
                             print(pdf_path)
                             # Create the URL to open `op.py`
+                            confidence = confidences[i]
+                            if confidence is None:
+                                display_conf = "N/A"
+                                color = "#808080"  # Gray if no confidence available.
+                            else:
+                                display_conf = f"{confidence * 100:.1f}%"
+                                if confidence >= 0.7:
+                                    color = "#4CAF50"  # Green for high confidence.
+                                elif confidence >= 0.6:
+                                    color = "#FFEB3B"  # Yellow for medium confidence.
+                                else:
+                                    color = "#F44336"  # Red for low confidence.
+                            
+                            # Create the URL to open the PDF viewer at the specific page.
                             pdf_viewer_url = f"http://localhost:8502/?file={pdf_path}&page={page_number+1}"
 
-                            # Use `st.markdown` with proper HTML formatting
+                            # Generate HTML for the button with the calculated background color and display confidence.
                             button_html = f"""
                             <a href="{pdf_viewer_url}" target="_blank">
-                                <button style="margin:5px; padding:10px; font-size:16px;">
-                                    📖 Source {i})
+                                <button style="
+                                    margin:5px; 
+                                    padding:10px; 
+                                    font-size:16px; 
+                                    background-color: {color}; 
+                                    color: black;
+                                    border: none;
+                                    border-radius: 5px;
+                                    cursor: pointer;
+                                ">
+                                    📖 Source {i+1} - Confidence: {display_conf}
                                 </button>
                             </a>
                             """
                             st.markdown(button_html, unsafe_allow_html=True)
-
-
-
                         
                         st.session_state["messages"].append(
                             {"role": "assistant", "content": response}
